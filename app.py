@@ -230,17 +230,11 @@ def generate_word(entries):
     return buf.getvalue()
 
 with st.sidebar:
-    st.markdown("### 歷史紀錄")
+    st.markdown('<div style="background:#EBF3FF;border-radius:10px;padding:0.55rem 0.9rem;margin-bottom:0.8rem;"><span style="font-size:17px;font-weight:800;color:#0055CC;">歷史紀錄</span></div>', unsafe_allow_html=True)
     if not st.session_state.history:
         st.caption("產生後將顯示於此")
     else:
         n = len(st.session_state.history)
-        c1, c2 = st.columns(2)
-        if c1.button("全選", use_container_width=True, type="primary"):
-            for i in range(n): st.session_state[f"hist_{i}"] = True
-        if c2.button("清除", use_container_width=True, type="primary"):
-            for i in range(n): st.session_state[f"hist_{i}"] = False
-        st.divider()
         selected = []
         for real_idx in range(n-1, -1, -1):
             entry = st.session_state.history[real_idx]
@@ -258,8 +252,13 @@ with st.sidebar:
                     st.rerun()
             if checked:
                 selected.append(real_idx)
+        st.divider()
+        c1, c2 = st.columns(2)
+        if c1.button("全選", use_container_width=True, type="primary"):
+            for i in range(n): st.session_state[f"hist_{i}"] = True
+        if c2.button("清除", use_container_width=True, type="primary"):
+            for i in range(n): st.session_state[f"hist_{i}"] = False
         if selected:
-            st.divider()
             sel_entries = [st.session_state.history[i] for i in sorted(selected)]
             doc_bytes = generate_word(sel_entries)
             st.download_button(

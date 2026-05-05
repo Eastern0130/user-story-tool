@@ -15,6 +15,97 @@ from docx.oxml import OxmlElement
 
 load_dotenv()
 
+client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+SYSTEM_PROMPT = """你是一位資深的軟體專案需求分析師。請根據使用者提供的功能需求描述，產出結構化的需求文件。
+
+請輸出以下三個部分，每個部分用指定的標記包起來，不要加其他標題或說明：
+
+[USER_STORY_START]
+（使用「身為＿＿，我希望能夠＿＿，以便＿＿」格式，一段完整句子）
+[USER_STORY_END]
+
+[AC_START]
+每條驗收條件請使用以下格式，條件之間空一行，不要加其他符號或說明。
+必須包含至少 1～2 條異常或邊界情境（例如：輸入格式錯誤、逾時、權限不足、重複提交等）：
+
+條件 1
+前提：xxx
+操作：xxx
+預期結果：xxx
+
+（依此類推，共 4~6 條）
+[AC_END]
+
+[RISK_START]
+每條風險請使用以下格式，風險之間空一行，不要加其他符號或說明：
+
+風險 1
+描述：xxx
+嚴重程度：高／中／低
+確認事項：xxx（PM 需要向業主或開發團隊確認的具體事項）
+
+（依此類推，共 2~4 條）
+[RISK_END]
+
+---
+
+以下是一個高品質輸出的完整範例，請參考其格式與細節程度：
+
+輸入範例：「使用者可以在登入後修改自己的個人資料，包含姓名、電話與 Email，修改後需要寄送確認信」
+
+[USER_STORY_START]
+身為已登入的系統使用者，我希望能夠修改自己的姓名、電話與 Email，以便保持個人資料的正確性，並透過確認信完成變更驗證。
+[USER_STORY_END]
+
+[AC_START]
+條件 1
+前提：使用者已登入，且個人資料頁面正常載入
+操作：填入新的姓名、電話與 Email，點擊「儲存」按鈕
+預期結果：系統顯示「資料更新成功」提示，並向新 Email 寄送確認信
+
+條件 2
+前提：使用者已登入，停留於個人資料頁面
+操作：僅修改電話號碼，Email 不異動，點擊「儲存」按鈕
+預期結果：電話號碼更新成功，不觸發 Email 確認信流程
+
+條件 3
+前提：使用者已登入，嘗試修改個人資料
+操作：在 Email 欄位輸入格式不正確的字串（如 abc123），點擊「儲存」按鈕
+預期結果：系統即時顯示提示「Email 格式不正確」，資料不送出
+
+條件 4
+前提：使用者已登入，嘗試修改個人資料
+操作：電話欄位輸入中文或特殊符號，點擊「儲存」按鈕
+預期結果：系統顯示「電話格式不正確，請輸入數字」，資料不送出
+
+條件 5
+前提：使用者已收到確認信
+操作：點擊確認信中的連結
+預期結果：Email 正式完成更新，系統顯示「Email 已驗證成功」
+[AC_END]
+
+[RISK_START]
+風險 1
+描述：確認信可能被歸類為垃圾郵件，導致使用者無法完成 Email 驗證
+嚴重程度：高
+確認事項：請業主確認郵件伺服器是否已設定 SPF／DKIM，並確認測試環境能正常收信
+
+風險 2
+描述：若使用者同時開多個分頁修改資料，可能發生競爭條件導致覆寫錯誤
+嚴重程度：中
+確認事項：請開發團隊確認後端是否針對同一帳號的並發修改請求做鎖定或衝突偵測
+
+風險 3
+描述：確認信連結未設定有效期限，存在安全疑慮
+嚴重程度：低
+確認事項：請開發團隊確認確認連結的有效期限設定（建議 24 小時），以及逾期後的引導流程
+[RISK_END]
+
+---
+
+請用繁體中文回答，語氣專業清晰。"""
+
 def _load_img(filename):
     path = os.path.join(os.path.dirname(__file__), filename)
     with open(path, "rb") as f:
@@ -94,6 +185,7 @@ hr{border:none!important;border-top:1px solid var(--sep)!important;margin:1rem 0
 .ac-row:last-child{margin-bottom:0;}
 .ac-label{font-size:13px;font-weight:700;padding:2px 8px;border-radius:980px;letter-spacing:0.04em;flex-shrink:0;text-align:center;line-height:1.7;}
 .label-premise{background:#F2F2F7;color:#6E6E73;}.label-action{background:#EBF3FF;color:#0055CC;}.label-result{background:#E8F8ED;color:#1a6632;}.label-risk{background:#FFF4E6;color:#7a4800;}.label-clarify{background:#F2F0FF;color:#4B35A1;}
+.label-severity-high{background:#FFEBEB;color:#8b1a15;}.label-severity-mid{background:#FFF4E6;color:#7a4800;}.label-severity-low{background:#E8F8ED;color:#1a6632;}
 .ac-text{font-size:17px;color:var(--label);line-height:1.65;}
 .page-footer{text-align:center;font-size:14px;color:var(--label-3);line-height:1.7;padding:0.5rem 0;}
 @media(max-width:640px){.hero h1{font-size:31px!important;}.output-card{padding:18px 20px!important;}[data-testid="stMainBlockContainer"],.block-container{padding-left:1rem!important;padding-right:1rem!important;}}
@@ -214,18 +306,21 @@ def generate_word(entries):
             _cell_text(r[1], d["前提"]); _cell_text(r[2], d["操作"]); _cell_text(r[3], d["預期"])
         doc.add_paragraph()
         risk_items = [i.strip() for i in entry["risk_block"].split("\n\n") if i.strip()]
-        t4 = doc.add_table(rows=1+len(risk_items), cols=3); t4.style = "Table Grid"
-        t4.columns[0].width = Cm(0.9)
-        for cell, lbl in zip(t4.rows[0].cells, ["#","風險描述","釐清問題"]):
+        t4 = doc.add_table(rows=1+len(risk_items), cols=4); t4.style = "Table Grid"
+        t4.columns[0].width = Cm(0.9); t4.columns[2].width = Cm(1.6)
+        for cell, lbl in zip(t4.rows[0].cells, ["#","風險描述","嚴重程度","確認事項"]):
             _cell_text(cell, lbl, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(cell, "FFF4E6"); _center_cell(cell)
         for i, item in enumerate(risk_items):
-            d = {"描述":"","釐清":""}
+            d = {"描述":"","嚴重程度":"","確認事項":""}
             for line in [l.strip() for l in item.split("\n") if l.strip()]:
                 for k in d:
                     if line.startswith(k): d[k] = line.split("：",1)[-1].strip()
             r = t4.rows[i+1].cells
             _cell_text(r[0], numbers[i] if i<len(numbers) else f"{i+1}.", align=WD_ALIGN_PARAGRAPH.CENTER); _center_cell(r[0])
-            _cell_text(r[1], d["描述"]); _cell_text(r[2], d["釐清"])
+            _cell_text(r[1], d["描述"])
+            sev_bg = "FFEBEB" if "高" in d["嚴重程度"] else ("E8F8ED" if "低" in d["嚴重程度"] else "FFF4E6")
+            _cell_text(r[2], d["嚴重程度"], align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(r[2], sev_bg); _center_cell(r[2])
+            _cell_text(r[3], d["確認事項"])
     buf = io.BytesIO(); doc.save(buf); buf.seek(0)
     return buf.getvalue()
 
@@ -323,8 +418,12 @@ def risk_to_html(text):
                 continue
             if line.startswith("描述"):
                 rows.append(f'<div class="ac-row"><span class="ac-label label-risk">風險</span><span class="ac-text">{line.split("：",1)[-1].strip()}</span></div>')
-            elif line.startswith("釐清"):
-                rows.append(f'<div class="ac-row"><span class="ac-label label-clarify">釐清</span><span class="ac-text">{line.split("：",1)[-1].strip()}</span></div>')
+            elif line.startswith("嚴重程度"):
+                sev = line.split("：",1)[-1].strip()
+                sev_class = "label-severity-high" if "高" in sev else ("label-severity-low" if "低" in sev else "label-severity-mid")
+                rows.append(f'<div class="ac-row"><span class="ac-label {sev_class}">{sev}</span></div>')
+            elif line.startswith("確認事項"):
+                rows.append(f'<div class="ac-row"><span class="ac-label label-clarify">確認</span><span class="ac-text">{line.split("：",1)[-1].strip()}</span></div>')
             else:
                 rows.append(f'<div class="ac-row"><span class="ac-text">{line}</span></div>')
         if rows:
@@ -375,45 +474,18 @@ if st.button("產生 User Story", type="primary", use_container_width=True):
         </div>""", unsafe_allow_html=True)
 
         try:
-            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-            prompt = f"""你是一位資深的軟體專案需求分析師。請根據以下功能需求描述，產出結構化的需求文件。
-
-功能需求描述：
-{requirement}
-
-請輸出以下三個部分，每個部分用指定的標記包起來，不要加其他標題或說明：
-
-[USER_STORY_START]
-（使用「身為＿＿，我希望能夠＿＿，以便＿＿」格式，一段完整句子）
-[USER_STORY_END]
-
-[AC_START]
-每條驗收條件請使用以下格式，條件之間空一行，不要加其他符號或說明：
-
-條件 1
-前提：xxx
-操作：xxx
-預期結果：xxx
-
-（依此類推，共 3~6 條）
-[AC_END]
-
-[RISK_START]
-每條風險請使用以下格式，風險之間空一行，不要加其他符號或說明：
-
-風險 1
-描述：xxx
-釐清：xxx
-
-（依此類推，共 2~4 條）
-[RISK_END]
-
-請用繁體中文回答，語氣專業清晰。"""
-
             message = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=1800,
-                messages=[{"role": "user", "content": prompt}]
+                max_tokens=2048,
+                system=[{
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                messages=[{
+                    "role": "user",
+                    "content": f"功能需求描述：\n{requirement}"
+                }]
             )
             result     = message.content[0].text
             user_story = extract_block(result, "[USER_STORY_START]", "[USER_STORY_END]")

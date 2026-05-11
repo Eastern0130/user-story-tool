@@ -14,97 +14,74 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 load_dotenv()
-
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-SYSTEM_PROMPT = """你是一位資深的軟體專案需求分析師。請根據使用者提供的功能需求描述，產出結構化的需求文件。
+# ── System Prompts ───────────────────────────────────────────────
 
-請輸出以下三個部分，每個部分用指定的標記包起來，不要加其他標題或說明：
+INTERVIEW_SYSTEM_PROMPT = """你是一位資深軟體專案需求分析師，正在協助 PM 進行即時需求訪談。
+PM 會描述客戶剛說的需求，可能很簡短或不完整。
+請快速分析，輸出以下三個部分，每個部分用指定標記包起來，不要加其他說明：
+
+[AMBIGUOUS_START]
+・（第一個模糊點）
+・（第二個模糊點）
+（共 2~4 條，每條一行，簡短）
+[AMBIGUOUS_END]
+
+[ISSUES_START]
+・（第一個潛在問題）
+・（第二個潛在問題）
+（共 2~4 條，每條一行，簡短）
+[ISSUES_END]
+
+[QUESTIONS_START]
+・（第一個追問問題，用問句）
+・（第二個追問問題，用問句）
+（共 3~5 條，每條一行，可直接開口問）
+[QUESTIONS_END]
+
+規則：每條都要簡短（一行以內）、具體、可直接在訪談中使用。用繁體中文。"""
+
+SRS_SYSTEM_PROMPT = """你是一位資深的軟體專案需求分析師。使用者會提供需求訪談的筆記或逐字稿，內容可能雜亂、口語化或不完整。
+請從中整理出結構化的需求文件，輸出以下六個部分，用指定標記包起來，不要加其他說明：
+
+[FUNC_DESC_START]
+（2~4 句話說明功能目的與範圍，語氣正式）
+[FUNC_DESC_END]
 
 [USER_STORY_START]
-（使用「身為＿＿，我希望能夠＿＿，以便＿＿」格式，一段完整句子）
+（「身為＿＿，我希望能夠＿＿，以便＿＿」格式，一段完整句子）
 [USER_STORY_END]
 
 [AC_START]
-每條驗收條件請使用以下格式，條件之間空一行，不要加其他符號或說明。
-必須包含至少 1～2 條異常或邊界情境（例如：輸入格式錯誤、逾時、權限不足、重複提交等）：
+條件之間空一行，必須含 1~2 條異常或邊界情境：
 
 條件 1
 前提：xxx
 操作：xxx
 預期結果：xxx
 
-（依此類推，共 4~6 條）
+（共 3~6 條）
 [AC_END]
 
-[RISK_START]
-每條風險請使用以下格式，風險之間空一行，不要加其他符號或說明：
+[NFR_START]
+每條一行，以「・」開頭，只列訪談中有明確提到的面向（效能、權限、安全性、相容性等）。若無，輸出「・無明確提及」：
+[NFR_END]
 
-風險 1
-描述：xxx
-嚴重程度：高／中／低
-確認事項：xxx（PM 需要向業主或開發團隊確認的具體事項）
-
-（依此類推，共 2~4 條）
-[RISK_END]
-
----
-
-以下是一個高品質輸出的完整範例，請參考其格式與細節程度：
-
-輸入範例：「使用者可以在登入後修改自己的個人資料，包含姓名、電話與 Email，修改後需要寄送確認信」
-
-[USER_STORY_START]
-身為已登入的系統使用者，我希望能夠修改自己的姓名、電話與 Email，以便保持個人資料的正確性，並透過確認信完成變更驗證。
-[USER_STORY_END]
-
-[AC_START]
-條件 1
-前提：使用者已登入，且個人資料頁面正常載入
-操作：填入新的姓名、電話與 Email，點擊「儲存」按鈕
-預期結果：系統顯示「資料更新成功」提示，並向新 Email 寄送確認信
-
-條件 2
-前提：使用者已登入，停留於個人資料頁面
-操作：僅修改電話號碼，Email 不異動，點擊「儲存」按鈕
-預期結果：電話號碼更新成功，不觸發 Email 確認信流程
-
-條件 3
-前提：使用者已登入，嘗試修改個人資料
-操作：在 Email 欄位輸入格式不正確的字串（如 abc123），點擊「儲存」按鈕
-預期結果：系統即時顯示提示「Email 格式不正確」，資料不送出
-
-條件 4
-前提：使用者已登入，嘗試修改個人資料
-操作：電話欄位輸入中文或特殊符號，點擊「儲存」按鈕
-預期結果：系統顯示「電話格式不正確，請輸入數字」，資料不送出
-
-條件 5
-前提：使用者已收到確認信
-操作：點擊確認信中的連結
-預期結果：Email 正式完成更新，系統顯示「Email 已驗證成功」
-[AC_END]
+[PENDING_START]
+每條一行，以「・」開頭，列出訪談中未明確定義、需向業主或使用者追問的問題：
+[PENDING_END]
 
 [RISK_START]
-風險 1
-描述：確認信可能被歸類為垃圾郵件，導致使用者無法完成 Email 驗證
-嚴重程度：高
-確認事項：請業主確認郵件伺服器是否已設定 SPF／DKIM，並確認測試環境能正常收信
-
-風險 2
-描述：若使用者同時開多個分頁修改資料，可能發生競爭條件導致覆寫錯誤
-嚴重程度：中
-確認事項：請開發團隊確認後端是否針對同一帳號的並發修改請求做鎖定或衝突偵測
-
-風險 3
-描述：確認信連結未設定有效期限，存在安全疑慮
-嚴重程度：低
-確認事項：請開發團隊確認確認連結的有效期限設定（建議 24 小時），以及逾期後的引導流程
+每條一行，以「・」開頭，格式：風險描述（嚴重程度：高／中／低）：
 [RISK_END]
 
----
+規則：
+- 只從訪談筆記中提取，不自行添加沒有提到的需求
+- 資訊不足的部分標注「資訊不足，待補充」
+- 用繁體中文，語氣正式"""
 
-請用繁體中文回答，語氣專業清晰。"""
+# ── Image Loading ────────────────────────────────────────────────
 
 def _load_img(filename):
     path = os.path.join(os.path.dirname(__file__), filename)
@@ -116,7 +93,9 @@ PARROT_SRC2 = _load_img("parrot2.png")
 PARROT_SRC3 = _load_img("parrot3.png")
 
 _parrot_icon = Image.open(os.path.join(os.path.dirname(__file__), "parrot1.png"))
-st.set_page_config(page_title="User Story 產生器", page_icon=_parrot_icon, layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="需求分析工具", page_icon=_parrot_icon, layout="centered", initial_sidebar_state="collapsed")
+
+# ── CSS ──────────────────────────────────────────────────────────
 
 st.markdown("""<style>
 :root {
@@ -156,16 +135,19 @@ hr{border:none!important;border-top:1px solid var(--sep)!important;margin:1rem 0
 .output-preview{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:14px 0 20px;}
 .preview-hint{font-size:14px;color:var(--label-3);font-weight:500;}
 .preview-chip{display:inline-flex;align-items:center;gap:4px;font-size:14px;font-weight:600;padding:4px 10px;border-radius:980px;}
-.chip-blue{background:#EBF3FF;color:#0055CC;}.chip-green{background:#E8F8ED;color:#1a6632;}.chip-orange{background:#FFF4E6;color:#7a4800;}
+.chip-blue{background:#EBF3FF;color:#0055CC;}.chip-green{background:#E8F8ED;color:#1a6632;}.chip-orange{background:#FFF4E6;color:#7a4800;}.chip-purple{background:#F2F0FF;color:#4B35A1;}.chip-gray{background:#F2F2F7;color:#6E6E73;}
 @keyframes fadeSlideUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
 .output-card{background:var(--card);border-radius:var(--r-lg);box-shadow:var(--shadow);padding:22px 26px;margin-bottom:16px;border:1px solid rgba(0,0,0,0.04);animation:fadeSlideUp 0.35s ease both;}
 .output-card-header{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--sep);}
 .card-badge{display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:700;padding:5px 12px;border-radius:980px;letter-spacing:0.02em;}
-.badge-blue{background:#EBF3FF;color:#0055CC;}.badge-green{background:#E8F8ED;color:#1a6632;}.badge-orange{background:#FFF4E6;color:#7a4800;}
+.badge-blue{background:#EBF3FF;color:#0055CC;}.badge-green{background:#E8F8ED;color:#1a6632;}.badge-orange{background:#FFF4E6;color:#7a4800;}.badge-purple{background:#F2F0FF;color:#4B35A1;}.badge-gray{background:#F2F2F7;color:#6E6E73;}
 .output-card-body{font-family:var(--font);font-size:18px;color:var(--label);line-height:1.78;}
 .output-card-body p{margin:0 0 10px 0;}
 .output-card-body p:last-child{margin-bottom:0;}
 .output-card-body strong,.output-card-body b{font-weight:600;color:var(--label);}
+.section-divider{display:flex;align-items:center;gap:12px;margin:24px 0 20px;}
+.section-divider-label{font-size:13px;font-weight:700;color:var(--label-3);letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap;}
+.section-divider-line{flex:1;height:1px;background:var(--sep);}
 .loading-overlay{position:fixed;inset:0;background:rgba(242,242,247,0.36);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);z-index:9999;display:flex;align-items:center;justify-content:center;}
 .parrot-loading-wrap{background:linear-gradient(white,white) padding-box,linear-gradient(135deg,rgba(0,122,255,0.35),rgba(52,199,89,0.35)) border-box;border:2px solid transparent;border-radius:24px;box-shadow:0 12px 40px rgba(0,0,0,0.14),0 0 1px rgba(0,0,0,0.06),0 0 28px rgba(0,122,255,0.07);padding:2.64rem 3.6rem 2.16rem;text-align:center;display:flex;flex-direction:column;align-items:center;}
 .parrot-loading{display:flex;justify-content:center;align-items:flex-end;gap:28px;margin-bottom:1.2rem;}
@@ -184,19 +166,24 @@ hr{border:none!important;border-top:1px solid var(--sep)!important;margin:1rem 0
 .ac-row{display:flex;align-items:baseline;gap:8px;margin-bottom:5px;}
 .ac-row:last-child{margin-bottom:0;}
 .ac-label{font-size:13px;font-weight:700;padding:2px 8px;border-radius:980px;letter-spacing:0.04em;flex-shrink:0;text-align:center;line-height:1.7;}
-.label-premise{background:#F2F2F7;color:#6E6E73;}.label-action{background:#EBF3FF;color:#0055CC;}.label-result{background:#E8F8ED;color:#1a6632;}.label-risk{background:#FFF4E6;color:#7a4800;}.label-clarify{background:#F2F0FF;color:#4B35A1;}
-.label-severity-high{background:#FFEBEB;color:#8b1a15;}.label-severity-mid{background:#FFF4E6;color:#7a4800;}.label-severity-low{background:#E8F8ED;color:#1a6632;}
+.label-premise{background:#F2F2F7;color:#6E6E73;}.label-action{background:#EBF3FF;color:#0055CC;}.label-result{background:#E8F8ED;color:#1a6632;}
 .ac-text{font-size:17px;color:var(--label);line-height:1.65;}
 .page-footer{text-align:center;font-size:14px;color:var(--label-3);line-height:1.7;padding:0.5rem 0;}
 @media(max-width:640px){.hero h1{font-size:31px!important;}.output-card{padding:18px 20px!important;}[data-testid="stMainBlockContainer"],.block-container{padding-left:1rem!important;padding-right:1rem!important;}}
 section[data-testid="stSidebar"]>div:first-child{padding-top:0.8rem!important;}
-[data-testid="stSidebar"] h3{width:100%!important;display:block!important;font-size:20px!important;font-weight:800!important;padding:0.2rem 0 0.6rem!important;border-bottom:1px solid var(--sep)!important;margin:0 0 0.6rem 0!important;}
 [data-testid="stSidebar"] [data-testid="stButton"]>button[kind="secondary"]{background:transparent!important;border:none!important;color:var(--label)!important;text-align:left!important;box-shadow:none!important;font-size:13px!important;font-weight:500!important;padding:3px 6px!important;border-radius:4px!important;}
 [data-testid="stSidebar"] [data-testid="stButton"]>button[kind="secondary"]:hover{background:rgba(0,0,0,0.05)!important;color:var(--label)!important;box-shadow:none!important;}
 [data-testid="stSidebar"] [data-testid="stButton"]>button[kind="primary"]{font-size:13px!important;font-weight:700!important;padding:5px 12px!important;border-radius:980px!important;}
-[data-testid="stSidebar"] [data-baseweb="checkbox"] input:checked+div,[data-testid="stSidebar"] [role="checkbox"][aria-checked="true"]{background-color:#AEAEB2!important;border-color:#AEAEB2!important;}
+[data-testid="stSidebar"] [data-baseweb="checkbox"] input:checked+div,[data-testid="stSidebar"] [role="checkbox"][aria-checked="true"]{background-color:var(--blue)!important;border-color:var(--blue)!important;}
+button[data-baseweb="tab"]{font-weight:600!important;font-size:15px!important;}
+button[data-baseweb="tab"][aria-selected="true"]{color:var(--blue)!important;}
+button[data-baseweb="tab"][aria-selected="false"]{color:var(--label-2)!important;}
+[data-baseweb="tab-highlight"]{background-color:var(--blue)!important;}
+[data-baseweb="tab-border"]{background-color:var(--sep)!important;}
 [data-testid="stStatusWidget"]{display:none!important;}
 </style>""", unsafe_allow_html=True)
+
+# ── Auth ─────────────────────────────────────────────────────────
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -220,7 +207,7 @@ if not st.session_state.authenticated:
             st.markdown(f"""
             <div style="text-align:center;padding:0.5rem 0 1.4rem;">
                 <img src="{PARROT_SRC}" style="height:110px;width:auto;filter:drop-shadow(0 4px 12px rgba(0,0,0,0.15));margin-bottom:1.2rem;">
-                <div style="font-size:23px;font-weight:700;color:#1C1C1E;margin-bottom:0.4rem;">User Story 產生器</div>
+                <div style="font-size:23px;font-weight:700;color:#1C1C1E;margin-bottom:0.4rem;">需求分析工具</div>
                 <div style="font-size:15px;color:#6E6E73;margin-bottom:0.4rem;">請輸入密碼以繼續</div>
             </div>""", unsafe_allow_html=True)
             pwd = st.text_input("", type="password", placeholder="密碼", label_visibility="collapsed")
@@ -239,12 +226,22 @@ if not st.session_state.authenticated:
     </script>""", height=0)
     st.stop()
 
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "results" not in st.session_state:
-    st.session_state.results = None
-if "input_key" not in st.session_state:
-    st.session_state.input_key = 0
+# ── Session State ────────────────────────────────────────────────
+
+if "interview_history" not in st.session_state:
+    st.session_state.interview_history = []
+if "interview_results" not in st.session_state:
+    st.session_state.interview_results = None
+if "interview_input_key" not in st.session_state:
+    st.session_state.interview_input_key = 0
+if "srs_history" not in st.session_state:
+    st.session_state.srs_history = []
+if "srs_results" not in st.session_state:
+    st.session_state.srs_results = None
+if "srs_input_key" not in st.session_state:
+    st.session_state.srs_input_key = 0
+
+# ── Word Helper Functions ────────────────────────────────────────
 
 def _set_font(run, name="標楷體", size=12, bold=False):
     run.bold = bold
@@ -273,129 +270,111 @@ def _cell_bg(cell, hex_color):
 def _center_cell(cell):
     cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
 
-def generate_word(entries):
-    doc = Document()
+def _section_box(doc, label, lines, header_color="EBF3FF"):
+    """框格區塊：標題列（底色）+ 內容列，每個 section 獨立一個框格。"""
+    t = doc.add_table(rows=2, cols=1)
+    t.style = "Table Grid"
+    # 標題列
+    h = t.rows[0].cells[0]
+    _cell_text(h, label, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
+    _cell_bg(h, header_color)
+    # 內容列
+    c = t.rows[1].cells[0]
+    c.text = ""
+    for i, line in enumerate(lines):
+        p = c.paragraphs[0] if i == 0 else c.add_paragraph()
+        _set_font(p.add_run(line), size=11)
+        p.paragraph_format.space_after = Pt(3)
+    # 間距
+    gap = doc.add_paragraph()
+    gap.paragraph_format.space_after = Pt(6)
+
+def _ac_section(doc, ac_text):
+    """驗收條件：合併標題列 + 欄位標題列 + 資料列。"""
+    items = [i.strip() for i in ac_text.split("\n\n") if i.strip()]
+    if not items:
+        return
+    numbers = ["①", "②", "③", "④", "⑤", "⑥"]
+    t = doc.add_table(rows=2 + len(items), cols=4)
+    t.style = "Table Grid"
+    t.columns[0].width = Cm(0.9)
+    # 合併標題列
+    t.rows[0].cells[0].merge(t.rows[0].cells[3])
+    _cell_text(t.rows[0].cells[0], "驗收條件", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+    _cell_bg(t.rows[0].cells[0], "E8F8ED")
+    _center_cell(t.rows[0].cells[0])
+    # 欄位標題
+    for cell, lbl in zip(t.rows[1].cells, ["#", "前提", "操作", "預期結果"]):
+        _cell_text(cell, lbl, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER)
+        _cell_bg(cell, "F2F2F7")
+        _center_cell(cell)
+    # 資料列
+    for i, item in enumerate(items):
+        d = {"前提": "", "操作": "", "預期": ""}
+        for line in [l.strip() for l in item.split("\n") if l.strip()]:
+            for k in d:
+                if line.startswith(k):
+                    d[k] = line.split("：", 1)[-1].strip()
+        r = t.rows[2 + i].cells
+        _cell_text(r[0], numbers[i] if i < len(numbers) else f"{i+1}.", align=WD_ALIGN_PARAGRAPH.CENTER)
+        _center_cell(r[0])
+        _cell_text(r[1], d["前提"])
+        _cell_text(r[2], d["操作"])
+        _cell_text(r[3], d["預期"])
+    gap = doc.add_paragraph()
+    gap.paragraph_format.space_after = Pt(6)
+
+def _set_margins(doc):
     for sec in doc.sections:
         sec.top_margin = Cm(2); sec.bottom_margin = Cm(2)
         sec.left_margin = Cm(2.5); sec.right_margin = Cm(2.5)
-    numbers = ["①","②","③","④","⑤","⑥"]
+
+# ── Word Generation Functions ────────────────────────────────────
+
+def generate_interview_word(entries):
+    doc = Document()
+    _set_margins(doc)
     for idx, entry in enumerate(entries):
         if idx > 0:
             doc.add_page_break()
-        t = doc.add_table(rows=1, cols=2); t.style = "Table Grid"
-        t.columns[0].width = Cm(2.0)
-        _cell_text(t.rows[0].cells[0], "需求描述", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(t.rows[0].cells[0], "F2F2F7"); _center_cell(t.rows[0].cells[0])
-        _cell_text(t.rows[0].cells[1], entry["requirement"])
-        doc.add_paragraph()
-        t2 = doc.add_table(rows=2, cols=1); t2.style = "Table Grid"
-        _cell_text(t2.rows[0].cells[0], "User Story", bold=True, align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(t2.rows[0].cells[0], "EBF3FF"); _center_cell(t2.rows[0].cells[0])
-        _cell_text(t2.rows[1].cells[0], entry["user_story"])
-        doc.add_paragraph()
-        ac_items = [i.strip() for i in entry["ac_block"].split("\n\n") if i.strip()]
-        t3 = doc.add_table(rows=1+len(ac_items), cols=4); t3.style = "Table Grid"
-        t3.columns[0].width = Cm(0.9)
-        for cell, lbl in zip(t3.rows[0].cells, ["#","前提","操作","預期結果"]):
-            _cell_text(cell, lbl, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(cell, "E8F8ED"); _center_cell(cell)
-        for i, item in enumerate(ac_items):
-            d = {"前提":"","操作":"","預期":""}
-            for line in [l.strip() for l in item.split("\n") if l.strip()]:
-                for k in d:
-                    if line.startswith(k): d[k] = line.split("：",1)[-1].strip()
-            r = t3.rows[i+1].cells
-            _cell_text(r[0], numbers[i] if i<len(numbers) else f"{i+1}.", align=WD_ALIGN_PARAGRAPH.CENTER); _center_cell(r[0])
-            _cell_text(r[1], d["前提"]); _cell_text(r[2], d["操作"]); _cell_text(r[3], d["預期"])
-        doc.add_paragraph()
-        risk_items = [i.strip() for i in entry["risk_block"].split("\n\n") if i.strip()]
-        t4 = doc.add_table(rows=1+len(risk_items), cols=4); t4.style = "Table Grid"
-        t4.columns[0].width = Cm(0.9); t4.columns[2].width = Cm(1.6)
-        for cell, lbl in zip(t4.rows[0].cells, ["#","風險描述","嚴重程度","確認事項"]):
-            _cell_text(cell, lbl, bold=True, align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(cell, "FFF4E6"); _center_cell(cell)
-        for i, item in enumerate(risk_items):
-            d = {"描述":"","嚴重程度":"","確認事項":""}
-            for line in [l.strip() for l in item.split("\n") if l.strip()]:
-                for k in d:
-                    if line.startswith(k): d[k] = line.split("：",1)[-1].strip()
-            r = t4.rows[i+1].cells
-            _cell_text(r[0], numbers[i] if i<len(numbers) else f"{i+1}.", align=WD_ALIGN_PARAGRAPH.CENTER); _center_cell(r[0])
-            _cell_text(r[1], d["描述"])
-            sev_bg = "FFEBEB" if "高" in d["嚴重程度"] else ("E8F8ED" if "低" in d["嚴重程度"] else "FFF4E6")
-            _cell_text(r[2], d["嚴重程度"], align=WD_ALIGN_PARAGRAPH.CENTER); _cell_bg(r[2], sev_bg); _center_cell(r[2])
-            _cell_text(r[3], d["確認事項"])
+        _section_box(doc, "需求描述", [entry["input"]], "F2F2F7")
+        lines = [l.strip() for l in entry["ambiguous"].split("\n") if l.strip()]
+        _section_box(doc, "模糊點", lines, "EBF3FF")
+        lines = [l.strip() for l in entry["issues"].split("\n") if l.strip()]
+        _section_box(doc, "潛在問題", lines, "FFF4E6")
+        lines = [l.strip() for l in entry["questions"].split("\n") if l.strip()]
+        _section_box(doc, "追問清單", lines, "E8F8ED")
     buf = io.BytesIO(); doc.save(buf); buf.seek(0)
     return buf.getvalue()
 
-with st.sidebar:
-    st.markdown('<div style="background:#EBF3FF;border-radius:10px;padding:0.55rem 0.9rem;margin-bottom:0.8rem;"><span style="font-size:17px;font-weight:800;color:#0055CC;">歷史紀錄</span></div>', unsafe_allow_html=True)
-    if not st.session_state.history:
-        st.caption("產生後將顯示於此")
-    else:
-        n = len(st.session_state.history)
-        selected = []
-        for real_idx in range(n-1, -1, -1):
-            entry = st.session_state.history[real_idx]
-            preview = entry["requirement"][:35] + "…" if len(entry["requirement"]) > 35 else entry["requirement"]
-            cb_col, txt_col = st.columns([1, 6])
-            with cb_col:
-                checked = st.checkbox("", key=f"hist_{real_idx}")
-            with txt_col:
-                if st.button(preview, key=f"view_{real_idx}", use_container_width=True):
-                    st.session_state.results = {
-                        "user_story": entry["user_story"],
-                        "ac_block": entry["ac_block"],
-                        "risk_block": entry["risk_block"],
-                    }
-                    st.rerun()
-            if checked:
-                selected.append(real_idx)
-        st.divider()
-        c1, c2 = st.columns(2)
-        if c1.button("全選", use_container_width=True, type="primary"):
-            for i in range(n): st.session_state[f"hist_{i}"] = True
-        if c2.button("清除", use_container_width=True, type="primary"):
-            for i in range(n): st.session_state[f"hist_{i}"] = False
-        if selected:
-            sel_entries = [st.session_state.history[i] for i in sorted(selected)]
-            doc_bytes = generate_word(sel_entries)
-            st.download_button(
-                label=f"⬇ 匯出 Word（{len(selected)} 份）",
-                data=doc_bytes,
-                file_name=f"user_story_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-            )
+def generate_srs_engineer_word(entries):
+    doc = Document()
+    _set_margins(doc)
+    for idx, entry in enumerate(entries):
+        if idx > 0:
+            doc.add_page_break()
+        _section_box(doc, "功能說明", [entry["func_desc"]], "EBF3FF")
+        _section_box(doc, "使用者故事", [entry["user_story"]], "F2F0FF")
+        _ac_section(doc, entry["ac_block"])
+        lines = [l.strip() for l in entry["nfr"].split("\n") if l.strip()]
+        _section_box(doc, "非功能性需求", lines, "F2F2F7")
+    buf = io.BytesIO(); doc.save(buf); buf.seek(0)
+    return buf.getvalue()
 
-st.markdown(f"""
-<div class="hero">
-    <img src="{PARROT_SRC}" class="hero-parrot" alt="鸚鵡">
-    <div class="hero-text">
-        <h1>User Story 產生器</h1>
-        <p>比起自己通靈，不如讓我來幫你</p>
-    </div>
-</div>""", unsafe_allow_html=True)
+def generate_srs_pm_word(entries):
+    doc = Document()
+    _set_margins(doc)
+    for idx, entry in enumerate(entries):
+        if idx > 0:
+            doc.add_page_break()
+        lines = [l.strip() for l in entry["pending"].split("\n") if l.strip()]
+        _section_box(doc, "待確認事項", lines, "FFFAE6")
+        lines = [l.strip() for l in entry["risk"].split("\n") if l.strip()]
+        _section_box(doc, "風險與疑慮", lines, "FFF4E6")
+    buf = io.BytesIO(); doc.save(buf); buf.seek(0)
+    return buf.getvalue()
 
-st.markdown("<hr>", unsafe_allow_html=True)
-
-st.markdown("""
-<div class="section-label">
-    <div class="step-dot">1</div>
-    <span class="section-label-text">輸入功能需求描述</span>
-</div>""", unsafe_allow_html=True)
-
-requirement = st.text_area(
-    label="功能需求描述",
-    placeholder="例如：使用者可以在登入後修改自己的個人資料，包含姓名、電話與 Email，修改後需要寄送確認信",
-    height=160,
-    label_visibility="collapsed",
-    key=f"req_{st.session_state.input_key}",
-)
-
-st.markdown("""
-<div class="output-preview">
-    <span class="preview-hint">將產出：</span>
-    <span class="preview-chip chip-blue">📖 User Story</span>
-    <span class="preview-chip chip-green">✅ Acceptance Criteria</span>
-    <span class="preview-chip chip-orange">⚠️ Risk Analysis</span>
-</div>""", unsafe_allow_html=True)
+# ── UI Helpers ───────────────────────────────────────────────────
 
 def extract_block(text, start_tag, end_tag):
     try:
@@ -403,38 +382,16 @@ def extract_block(text, start_tag, end_tag):
     except IndexError:
         return ""
 
-def to_html(text):
-    return "".join(f"<p>{p.replace(chr(10),'<br>')}</p>" for p in text.split("\n\n"))
+def bullet_to_html(text):
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    return "".join(f"<p>{line}</p>" for line in lines)
 
-def risk_to_html(text):
-    items = [i.strip() for i in text.split("\n\n") if i.strip()]
-    numbers = ["①","②","③","④","⑤","⑥"]
-    html_parts = []
-    idx = 0
-    for item in items:
-        rows = []
-        for line in [l.strip() for l in item.split("\n") if l.strip()]:
-            if line.startswith("風險"):
-                continue
-            if line.startswith("描述"):
-                rows.append(f'<div class="ac-row"><span class="ac-label label-risk">風險</span><span class="ac-text">{line.split("：",1)[-1].strip()}</span></div>')
-            elif line.startswith("嚴重程度"):
-                sev = line.split("：",1)[-1].strip()
-                sev_class = "label-severity-high" if "高" in sev else ("label-severity-low" if "低" in sev else "label-severity-mid")
-                rows.append(f'<div class="ac-row"><span class="ac-label {sev_class}">{sev}</span></div>')
-            elif line.startswith("確認事項"):
-                rows.append(f'<div class="ac-row"><span class="ac-label label-clarify">確認</span><span class="ac-text">{line.split("：",1)[-1].strip()}</span></div>')
-            else:
-                rows.append(f'<div class="ac-row"><span class="ac-text">{line}</span></div>')
-        if rows:
-            num = numbers[idx] if idx < len(numbers) else f"{idx+1}."
-            html_parts.append(f'<div class="ac-item"><div class="ac-num">{num}</div><div class="ac-body">{"".join(rows)}</div></div>')
-            idx += 1
-    return "".join(html_parts)
+def to_html(text):
+    return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in text.split("\n\n"))
 
 def ac_to_html(text):
     items = [i.strip() for i in text.split("\n\n") if i.strip()]
-    numbers = ["①","②","③","④","⑤","⑥"]
+    numbers = ["①", "②", "③", "④", "⑤", "⑥"]
     html_parts = []
     idx = 0
     for item in items:
@@ -456,75 +413,301 @@ def ac_to_html(text):
             idx += 1
     return "".join(html_parts)
 
-if st.button("產生 User Story", type="primary", use_container_width=True):
-    if not requirement.strip():
-        st.warning("請先輸入需求描述，再按產生按鈕")
-    else:
-        loading_ph = st.empty()
-        loading_ph.markdown(f"""
-        <div class="loading-overlay">
-            <div class="parrot-loading-wrap">
-                <div class="parrot-loading">
-                    <img src="{PARROT_SRC2}" class="loading-parrot p1" alt="">
-                    <img src="{PARROT_SRC2}" class="loading-parrot p2" alt="">
-                    <img src="{PARROT_SRC2}" class="loading-parrot p3" alt="">
-                </div>
-                <div class="loading-text">載入中...</div>
+def _loading_html():
+    return f"""
+    <div class="loading-overlay">
+        <div class="parrot-loading-wrap">
+            <div class="parrot-loading">
+                <img src="{PARROT_SRC2}" class="loading-parrot p1" alt="">
+                <img src="{PARROT_SRC2}" class="loading-parrot p2" alt="">
+                <img src="{PARROT_SRC2}" class="loading-parrot p3" alt="">
             </div>
-        </div>""", unsafe_allow_html=True)
+            <div class="loading-text">分析中...</div>
+        </div>
+    </div>"""
 
-        try:
-            message = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2048,
-                system=[{
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"}
-                }],
-                messages=[{
-                    "role": "user",
-                    "content": f"功能需求描述：\n{requirement}"
-                }]
+# ── Sidebar ──────────────────────────────────────────────────────
+
+with st.sidebar:
+    # 套用全選/清除的動作（必須在 checkbox 渲染前執行）
+    int_hist = st.session_state.interview_history
+    srs_hist = st.session_state.srs_history
+    if st.session_state.get("_int_select_action") == "all":
+        for i in range(len(int_hist)): st.session_state[f"int_hist_{i}"] = True
+        del st.session_state["_int_select_action"]
+    elif st.session_state.get("_int_select_action") == "clear":
+        for i in range(len(int_hist)): st.session_state[f"int_hist_{i}"] = False
+        del st.session_state["_int_select_action"]
+    if st.session_state.get("_srs_select_action") == "all":
+        for i in range(len(srs_hist)): st.session_state[f"srs_hist_{i}"] = True
+        del st.session_state["_srs_select_action"]
+    elif st.session_state.get("_srs_select_action") == "clear":
+        for i in range(len(srs_hist)): st.session_state[f"srs_hist_{i}"] = False
+        del st.session_state["_srs_select_action"]
+
+    # 訪談輔助紀錄
+    st.markdown('<div style="background:#EBF3FF;border-radius:10px;padding:0.45rem 0.9rem;margin-bottom:0.6rem;"><span style="font-size:15px;font-weight:800;color:#0055CC;">訪談輔助紀錄</span></div>', unsafe_allow_html=True)
+    if not int_hist:
+        st.caption("分析後將顯示於此")
+    else:
+        n = len(int_hist)
+        int_selected = []
+        for real_idx in range(n - 1, -1, -1):
+            entry = int_hist[real_idx]
+            preview = entry["input"][:30] + "…" if len(entry["input"]) > 30 else entry["input"]
+            cb_col, txt_col = st.columns([1, 6])
+            with cb_col:
+                checked = st.checkbox("", key=f"int_hist_{real_idx}")
+            with txt_col:
+                if st.button(preview, key=f"int_view_{real_idx}", use_container_width=True):
+                    st.session_state.interview_results = {
+                        "input": entry["input"],
+                        "ambiguous": entry["ambiguous"],
+                        "issues": entry["issues"],
+                        "questions": entry["questions"],
+                    }
+                    st.rerun()
+            if checked:
+                int_selected.append(real_idx)
+        c1, c2 = st.columns(2)
+        if c1.button("全選", key="int_sel_all", use_container_width=True, type="primary"):
+            st.session_state["_int_select_action"] = "all"
+            st.rerun()
+        if c2.button("清除", key="int_sel_clear", use_container_width=True, type="primary"):
+            st.session_state["_int_select_action"] = "clear"
+            st.rerun()
+        if int_selected:
+            sel = [int_hist[i] for i in sorted(int_selected)]
+            st.download_button(
+                label=f"匯出 Word（{len(int_selected)} 筆）",
+                data=generate_interview_word(sel),
+                file_name=f"訪談分析_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="int_export",
             )
-            result     = message.content[0].text
-            user_story = extract_block(result, "[USER_STORY_START]", "[USER_STORY_END]")
-            ac_block   = extract_block(result, "[AC_START]",         "[AC_END]")
-            risk_block = extract_block(result, "[RISK_START]",       "[RISK_END]")
 
-            loading_ph.empty()
-            st.session_state.history.append({
-                "time": datetime.now().strftime("%H:%M"),
-                "requirement": requirement,
-                "user_story": user_story,
-                "ac_block": ac_block,
-                "risk_block": risk_block,
-            })
-            st.session_state.results = {"user_story": user_story, "ac_block": ac_block, "risk_block": risk_block}
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    # SRS 紀錄
+    st.markdown('<div style="background:#E8F8ED;border-radius:10px;padding:0.45rem 0.9rem;margin-bottom:0.6rem;"><span style="font-size:15px;font-weight:800;color:#1a6632;">SRS 紀錄</span></div>', unsafe_allow_html=True)
+    if not srs_hist:
+        st.caption("生成後將顯示於此")
+    else:
+        n2 = len(srs_hist)
+        srs_selected = []
+        for real_idx in range(n2 - 1, -1, -1):
+            entry = srs_hist[real_idx]
+            preview = entry["input"][:30] + "…" if len(entry["input"]) > 30 else entry["input"]
+            cb_col, txt_col = st.columns([1, 6])
+            with cb_col:
+                checked = st.checkbox("", key=f"srs_hist_{real_idx}")
+            with txt_col:
+                if st.button(preview, key=f"srs_view_{real_idx}", use_container_width=True):
+                    st.session_state.srs_results = {k: entry[k] for k in ("func_desc","user_story","ac_block","nfr","pending","risk")}
+                    st.rerun()
+            if checked:
+                srs_selected.append(real_idx)
+        c3, c4 = st.columns(2)
+        if c3.button("全選", key="srs_sel_all", use_container_width=True, type="primary"):
+            st.session_state["_srs_select_action"] = "all"
+            st.rerun()
+        if c4.button("清除", key="srs_sel_clear", use_container_width=True, type="primary"):
+            st.session_state["_srs_select_action"] = "clear"
+            st.rerun()
+        if srs_selected:
+            sel2 = [srs_hist[i] for i in sorted(srs_selected)]
+            st.download_button(
+                label=f"工程師版 Word（{len(srs_selected)} 筆）",
+                data=generate_srs_engineer_word(sel2),
+                file_name=f"SRS_工程師版_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="srs_eng_export",
+            )
+            st.download_button(
+                label=f"PM 版 Word（{len(srs_selected)} 筆）",
+                data=generate_srs_pm_word(sel2),
+                file_name=f"SRS_PM版_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="srs_pm_export",
+            )
+
+# ── Hero ─────────────────────────────────────────────────────────
+
+st.markdown(f"""
+<div class="hero">
+    <img src="{PARROT_SRC}" class="hero-parrot" alt="鸚鵡">
+    <div class="hero-text">
+        <h1>需求分析工具</h1>
+        <p>訪談輔助 · SRS 文件生成</p>
+    </div>
+</div>""", unsafe_allow_html=True)
+
+st.markdown("<hr>", unsafe_allow_html=True)
+
+tab1, tab2 = st.tabs(["訪談輔助", "SRS 生成"])
+
+# ── Tab 1：訪談輔助 ──────────────────────────────────────────────
+
+with tab1:
+    st.markdown("""
+    <div class="section-label">
+        <div class="step-dot">1</div>
+        <span class="section-label-text">輸入客戶剛說的需求（幾個字就夠）</span>
+    </div>""", unsafe_allow_html=True)
+
+    interview_input = st.text_area(
+        label="訪談輸入",
+        placeholder="例如：他們說要一個報表，讓主管可以看到所有案件的狀態",
+        height=120,
+        label_visibility="collapsed",
+        key=f"interview_{st.session_state.interview_input_key}",
+    )
+
+    st.markdown("""
+    <div class="output-preview">
+        <span class="preview-hint">將產出：</span>
+        <span class="preview-chip chip-blue">模糊點</span>
+        <span class="preview-chip chip-orange">潛在問題</span>
+        <span class="preview-chip chip-green">追問清單</span>
+    </div>""", unsafe_allow_html=True)
+
+    if st.button("分析這個需求", type="primary", use_container_width=True, key="interview_btn"):
+        if not interview_input.strip():
+            st.warning("請先輸入需求，再按分析")
+        else:
+            loading_ph = st.empty()
+            loading_ph.markdown(_loading_html(), unsafe_allow_html=True)
+            try:
+                message = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=1024,
+                    system=[{"type": "text", "text": INTERVIEW_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": f"需求描述：\n{interview_input}"}]
+                )
+                result    = message.content[0].text
+                ambiguous = extract_block(result, "[AMBIGUOUS_START]", "[AMBIGUOUS_END]")
+                issues    = extract_block(result, "[ISSUES_START]",    "[ISSUES_END]")
+                questions = extract_block(result, "[QUESTIONS_START]", "[QUESTIONS_END]")
+                loading_ph.empty()
+                entry = {"time": datetime.now().strftime("%H:%M"), "input": interview_input,
+                         "ambiguous": ambiguous, "issues": issues, "questions": questions}
+                st.session_state.interview_history.append(entry)
+                st.session_state.interview_results = entry
+                st.session_state.interview_input_key += 1
+                st.rerun()
+            except anthropic.AuthenticationError:
+                loading_ph.empty(); st.error("API 金鑰錯誤，請確認 .env 檔案中的 ANTHROPIC_API_KEY")
+            except anthropic.RateLimitError:
+                loading_ph.empty(); st.error("API 使用量已達上限，請稍後再試")
+            except Exception as e:
+                loading_ph.empty(); st.error(f"發生未預期的錯誤：{str(e)}")
+
+    if st.session_state.interview_results:
+        r = st.session_state.interview_results
+        st.success("分析完成，以下是你可以追問的方向")
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0s"><div class="output-card-header"><span class="card-badge badge-blue">模糊點</span></div><div class="output-card-body">{bullet_to_html(r["ambiguous"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.1s"><div class="output-card-header"><span class="card-badge badge-orange">潛在問題</span></div><div class="output-card-body">{bullet_to_html(r["issues"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.2s"><div class="output-card-header"><span class="card-badge badge-green">追問清單</span></div><div class="output-card-body">{bullet_to_html(r["questions"])}</div></div>', unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if st.button("清除", use_container_width=True, key="interview_clear"):
+            st.session_state.interview_results = None
+            st.session_state.interview_input_key += 1
             st.rerun()
 
-        except anthropic.AuthenticationError:
-            loading_ph.empty()
-            st.error("API 金鑰錯誤，請確認 .env 檔案中的 ANTHROPIC_API_KEY 是否填寫正確")
-        except anthropic.RateLimitError:
-            loading_ph.empty()
-            st.error("API 使用量已達上限，請稍後再試")
-        except Exception as e:
-            loading_ph.empty()
-            st.error(f"發生未預期的錯誤：{str(e)}")
+# ── Tab 2：SRS 生成 ──────────────────────────────────────────────
 
-if st.session_state.results:
-    r = st.session_state.results
-    st.success("分析完成")
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-    st.markdown(f'<div class="output-card" style="animation-delay:0s"><div class="output-card-header"><span class="card-badge badge-blue">📖 User Story</span></div><div class="output-card-body">{to_html(r["user_story"])}</div></div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="output-card" style="animation-delay:0.1s"><div class="output-card-header"><span class="card-badge badge-green">✅ Acceptance Criteria</span></div><div class="output-card-body">{ac_to_html(r["ac_block"])}</div></div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="output-card" style="animation-delay:0.2s"><div class="output-card-header"><span class="card-badge badge-orange">⚠️ Risk Analysis</span></div><div class="output-card-body">{risk_to_html(r["risk_block"])}</div></div>', unsafe_allow_html=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    if st.button("下一則", use_container_width=True):
-        st.session_state.results = None
-        st.session_state.input_key += 1
-        st.rerun()
+with tab2:
+    st.markdown("""
+    <div class="section-label">
+        <div class="step-dot">1</div>
+        <span class="section-label-text">貼入訪談筆記或逐字稿（任何格式皆可）</span>
+    </div>""", unsafe_allow_html=True)
+
+    srs_input = st.text_area(
+        label="訪談筆記",
+        placeholder="例如：主管要看所有案件狀態 / 阿輝說要能篩選日期 / 不確定要不要分權限 / 要能匯出 Excel / 下週要給我們",
+        height=200,
+        label_visibility="collapsed",
+        key=f"srs_{st.session_state.srs_input_key}",
+    )
+
+    st.markdown("""
+    <div class="output-preview">
+        <span class="preview-hint">工程師版：</span>
+        <span class="preview-chip chip-blue">功能說明</span>
+        <span class="preview-chip chip-purple">使用者故事</span>
+        <span class="preview-chip chip-green">驗收條件</span>
+        <span class="preview-chip chip-gray">非功能需求</span>
+        <span class="preview-hint" style="margin-left:8px;">PM 版：</span>
+        <span class="preview-chip chip-orange">待確認事項</span>
+        <span class="preview-chip chip-orange">風險</span>
+    </div>""", unsafe_allow_html=True)
+
+    if st.button("生成需求規格文件", type="primary", use_container_width=True, key="srs_btn"):
+        if not srs_input.strip():
+            st.warning("請先貼入訪談筆記，再按生成")
+        else:
+            loading_ph2 = st.empty()
+            loading_ph2.markdown(_loading_html(), unsafe_allow_html=True)
+            try:
+                message = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=3000,
+                    system=[{"type": "text", "text": SRS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": f"訪談筆記：\n{srs_input}"}]
+                )
+                result    = message.content[0].text
+                func_desc = extract_block(result, "[FUNC_DESC_START]",  "[FUNC_DESC_END]")
+                user_story= extract_block(result, "[USER_STORY_START]", "[USER_STORY_END]")
+                ac_block  = extract_block(result, "[AC_START]",         "[AC_END]")
+                nfr       = extract_block(result, "[NFR_START]",        "[NFR_END]")
+                pending   = extract_block(result, "[PENDING_START]",    "[PENDING_END]")
+                risk      = extract_block(result, "[RISK_START]",       "[RISK_END]")
+                loading_ph2.empty()
+                entry = {
+                    "time": datetime.now().strftime("%H:%M"), "input": srs_input,
+                    "func_desc": func_desc, "user_story": user_story,
+                    "ac_block": ac_block, "nfr": nfr, "pending": pending, "risk": risk,
+                }
+                st.session_state.srs_history.append(entry)
+                st.session_state.srs_results = entry
+                st.session_state.srs_input_key += 1
+                st.rerun()
+            except anthropic.AuthenticationError:
+                loading_ph2.empty(); st.error("API 金鑰錯誤，請確認 .env 檔案中的 ANTHROPIC_API_KEY")
+            except anthropic.RateLimitError:
+                loading_ph2.empty(); st.error("API 使用量已達上限，請稍後再試")
+            except Exception as e:
+                loading_ph2.empty(); st.error(f"發生未預期的錯誤：{str(e)}")
+
+    if st.session_state.srs_results:
+        r = st.session_state.srs_results
+        st.success("文件生成完成")
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        # 工程師版
+        st.markdown('<div class="section-divider"><div class="section-divider-line"></div><span class="section-divider-label">工程師版</span><div class="section-divider-line"></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0s"><div class="output-card-header"><span class="card-badge badge-blue">功能說明</span></div><div class="output-card-body">{to_html(r["func_desc"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.05s"><div class="output-card-header"><span class="card-badge badge-purple">使用者故事</span></div><div class="output-card-body">{to_html(r["user_story"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.1s"><div class="output-card-header"><span class="card-badge badge-green">驗收條件</span></div><div class="output-card-body">{ac_to_html(r["ac_block"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.15s"><div class="output-card-header"><span class="card-badge badge-gray">非功能性需求</span></div><div class="output-card-body">{bullet_to_html(r["nfr"])}</div></div>', unsafe_allow_html=True)
+
+        # PM 版
+        st.markdown('<div class="section-divider"><div class="section-divider-line"></div><span class="section-divider-label">PM 版</span><div class="section-divider-line"></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.2s"><div class="output-card-header"><span class="card-badge badge-orange">待確認事項</span></div><div class="output-card-body">{bullet_to_html(r["pending"])}</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="output-card" style="animation-delay:0.25s"><div class="output-card-header"><span class="card-badge badge-orange">風險與疑慮</span></div><div class="output-card-body">{bullet_to_html(r["risk"])}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if st.button("清除", use_container_width=True, key="srs_clear"):
+            st.session_state.srs_results = None
+            st.session_state.srs_input_key += 1
+            st.rerun()
+
+# ── Footer ───────────────────────────────────────────────────────
 
 st.markdown("<hr>", unsafe_allow_html=True)
 st.markdown('<div class="page-footer">本工具在本機運行 · 輸入內容僅傳送至 Anthropic API 進行分析<br>不會儲存於任何第三方系統</div>', unsafe_allow_html=True)
